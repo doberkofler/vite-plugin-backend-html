@@ -1,0 +1,23 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2022"],
+		"module": "ESNext",
+		"allowImportingTsExtensions": true,
+		"noEmit": true,
+		"declaration": false,
+		"declarationMap": false,
+		"outDir": "dist/types",
+		"strict": true,
+		"esModuleInterop": true,
+		"moduleResolution": "node",
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"noFallthroughCasesInSwitch": true,
+		"noImplicitReturns": true,
+		"noImplicitAny": true,
+		"noImplicitThis": true,
+		"strictNullChecks": true
+	},
+	"include": ["src", "tests", "*.config.ts", "eslint.config.js", "example/vite.config.ts"]
+}
