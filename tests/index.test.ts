@@ -3,7 +3,6 @@ import {describe, it, expect, beforeAll, afterAll, vitest} from 'vitest';
 import {createServer} from 'vite';
 import type {ViteDevServer} from 'vite';
 import type {IncomingMessage, ServerResponse} from 'node:http';
-import {Readable} from 'node:stream';
 import {
 	backendProxyPlugin,
 	extractModuleFromMeta,
