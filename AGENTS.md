@@ -22,7 +22,6 @@ npx vitest run <pattern> # Run specific test (e.g. npx vitest run inject)
 - **Formatting:** Tabs, single quotes, no bracket spacing, 160 char width.
 - **Semicolons:** Required.
 - **Naming:** `camelCase` (vars/funcs), `PascalCase` (types), `SCREAMING_SNAKE` (consts).
-- **No Abbreviations:** Use descriptive names (`unicorn/prevent-abbreviations` is OFF).
 - **Boolean Prefixes:** `is`, `has`, `should`.
 
 ### Imports

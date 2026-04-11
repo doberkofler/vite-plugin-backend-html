@@ -89,9 +89,10 @@
 
 		"unicorn/no-useless-undefined": ["error", {"checkArrowFunctionBody": false}],
 		"unicorn/filename-case": "off",
-		"unicorn/prevent-abbreviations": "off",
 		"unicorn/no-array-reduce": "off",
-		"unicorn/no-null": "off"
+		"unicorn/no-null": "off",
+
+		"vitest/require-mock-type-parameters": "off"
 	},
 	"overrides": [
 		{
