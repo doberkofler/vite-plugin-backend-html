@@ -1,5 +1,5 @@
 import {type IncomingMessage, type ServerResponse} from 'node:http';
-import type {ViteDevServer} from 'vite';
+import {type ViteDevServer} from 'vite';
 
 import {normalizeRedirectLocation} from './path-utils.ts';
 
@@ -84,8 +84,8 @@ export type AssetConfig = {
 	globalEntryPoints: EntryPoints;
 	/**
 	 * Get module-specific entry points
-	 * @param module - Module name
-	 * @returns Entry points
+	 * @param {string} module - Module name
+	 * @returns {EntryPoints} Entry points
 	 */
 	getModuleEntryPoints: (module: string) => EntryPoints;
 };
@@ -101,8 +101,8 @@ export type ProxyConfig = {
 	backendBaseUrl: string;
 	/**
 	 * Custom bypass function to skip proxying for specific URLs
-	 * @param url - Request URL
-	 * @returns True if the request should be skipped (handled by Vite), false otherwise
+	 * @param {string} url - Request URL
+	 * @returns {boolean} True if the request should be skipped (handled by Vite), false otherwise
 	 */
 	bypass: (url: string) => boolean;
 	/**
@@ -126,6 +126,21 @@ export type ProxyConfig = {
 };
 
 /**
+ * Returns current date-time in format: HH24:MI:SS.MS
+ * @returns {string} Formatted timestamp.
+ */
+const nowUtcCompact = (): string => {
+	const now = new Date();
+
+	const hh = now.getUTCHours().toString().padStart(2, '0');
+	const mi = now.getUTCMinutes().toString().padStart(2, '0');
+	const ss = now.getUTCSeconds().toString().padStart(2, '0');
+	const ms = now.getUTCMilliseconds().toString().padStart(3, '0');
+
+	return `${hh}:${mi}:${ss}.${ms}`;
+};
+
+/**
  * Core backend proxy logic
  * @public
  */
@@ -134,7 +149,7 @@ export class BackendProxy {
 
 	/**
 	 * Creates a new backend proxy instance
-	 * @param config - Proxy configuration
+	 * @param {ProxyConfig} config - Proxy configuration
 	 */
 	public constructor(config: ProxyConfig) {
 		this.config = config;
@@ -142,9 +157,9 @@ export class BackendProxy {
 
 	/**
 	 * Logs a debug message
-	 * @param level - Log level
-	 * @param message - Message to log
-	 * @param data - Optional data to log
+	 * @param {LoggingLevel} level - Log level
+	 * @param {string} message - Message to log
+	 * @param {unknown} data - Optional data to log
 	 */
 	public log(level: LoggingLevel, message: string, data?: unknown): void {
 		if (!this.config.debug) {
@@ -178,17 +193,17 @@ export class BackendProxy {
 
 	/**
 	 * Handles a request from Vite and proxies it to the backend if appropriate
-	 * @param url - Request URL
-	 * @param req - Node request object
-	 * @param res - Node response object
-	 * @param server - Vite dev server
-	 * @returns True if the request was handled, false otherwise
+	 * @param {string} url - Request URL
+	 * @param {IncomingMessage} req - Node request object
+	 * @param {ServerResponse} res - Node response object
+	 * @param {ViteDevServer} server - Vite dev server
+	 * @returns {Promise<boolean>} True if the request was handled, false otherwise
 	 */
 	public async handleRequest(url: string, req: IncomingMessage, res: ServerResponse, server: ViteDevServer): Promise<boolean> {
 		try {
 			let currentUrl = url;
 			// Apply rewrites
-			if (this.config.rewrites) {
+			if (typeof this.config.rewrites !== 'undefined') {
 				for (const [prefix, replacement] of Object.entries(this.config.rewrites)) {
 					if (currentUrl.startsWith(prefix)) {
 						const newUrl = currentUrl.replace(prefix, replacement);
@@ -209,18 +224,15 @@ export class BackendProxy {
 			// Read body for POST requests
 			let body: Buffer | undefined;
 			if (method === 'POST') {
-				body = await new Promise<Buffer>((resolve, reject) => {
-					const chunks: Buffer[] = [];
-					req.on('data', (chunk: Buffer) => {
+				const chunks: Buffer[] = [];
+				for await (const chunk of req) {
+					if (Buffer.isBuffer(chunk)) {
 						chunks.push(chunk);
-					});
-					req.on('end', () => {
-						resolve(Buffer.concat(chunks));
-					});
-					req.on('error', (err) => {
-						reject(err);
-					});
-				});
+					} else {
+						chunks.push(Buffer.from(String(chunk)));
+					}
+				}
+				body = Buffer.concat(chunks);
 			}
 
 			const result = await this.config.backendHandler({
@@ -250,15 +262,15 @@ export class BackendProxy {
 
 	/**
 	 * Processes the result and sends it to the response
-	 * @param result - Result from backend handler
-	 * @param url - Request URL
-	 * @param res - Node response object
-	 * @param server - Vite dev server
-	 * @returns True if handled
+	 * @param {BackendResult} result - Result from backend handler
+	 * @param {string} url - Request URL
+	 * @param {ServerResponse} res - Node response object
+	 * @param {ViteDevServer} server - Vite dev server
+	 * @returns {Promise<boolean>} True if handled
 	 */
 	private async processResult(result: BackendResult, url: string, res: ServerResponse, server: ViteDevServer): Promise<boolean> {
 		// Forward headers from backend (e.g. set-cookie)
-		if (result.headers) {
+		if (typeof result.headers !== 'undefined') {
 			for (const [key, value] of Object.entries(result.headers)) {
 				res.setHeader(key, value);
 			}
@@ -307,18 +319,18 @@ export class BackendProxy {
 
 	/**
 	 * Injects assets into HTML
-	 * @param html - HTML content
-	 * @param module - Optional module name
-	 * @returns Processed HTML
+	 * @param {string} html - HTML content
+	 * @param {string | null} module - Optional module name
+	 * @returns {string} Processed HTML
 	 */
 	private injectAssets(html: string, module: string | null): string {
 		const injection: string[] = [];
 
 		const inject = (entryPoints: EntryPoints): void => {
-			if (entryPoints.css) {
+			if (typeof entryPoints.css === 'string' && entryPoints.css.length > 0) {
 				injection.push(`<link rel="stylesheet" href="${entryPoints.css}">`);
 			}
-			if (entryPoints.js) {
+			if (typeof entryPoints.js === 'string' && entryPoints.js.length > 0) {
 				injection.push(`<script type="module" src="${entryPoints.js}"></script>`);
 			}
 		};
@@ -327,7 +339,7 @@ export class BackendProxy {
 
 		inject({js: '/@vite/client'});
 		inject(globalEntryPoints);
-		if (module) {
+		if (typeof module === 'string') {
 			inject(getModuleEntryPoints(module));
 		}
 
@@ -347,8 +359,8 @@ export class BackendProxy {
 
 	/**
 	 * Checks if the URL should be skipped (handled by Vite)
-	 * @param url - Request URL
-	 * @returns True if skipped
+	 * @param {string} url - Request URL
+	 * @returns {boolean} True if skipped
 	 */
 	private shouldSkipForVite(url: string): boolean {
 		if (this.config.bypass(url)) {
@@ -366,17 +378,18 @@ export class BackendProxy {
 
 /**
  * Helper: Create fetch-based backend handler
- * @param options - Handler options
- * @param options.extractModule - Optional module extraction function
- * @param options.transformBackendUrl - Optional function to transform the backend URL
- * @returns Backend handler
+ * @param {{ extractModule?: (url: string, html: string, headers: Headers) => string | null | Promise<string | null>; transformBackendUrl?: (url: string, backendBaseUrl: string) => string; }} options - Handler options
+ * @param {(url: string, html: string, headers: Headers) => string | null | Promise<string | null>} options.extractModule - Optional module extraction function
+ * @param {(url: string, backendBaseUrl: string) => string} options.transformBackendUrl - Optional function to transform the backend URL
+ * @returns {BackendHandler} Backend handler
  * @public
  */
-export function createFetchBackendHandler(options: {
-	extractModule?: (url: string, html: string, headers: Headers) => string | null | Promise<string | null>;
-	transformBackendUrl?: (url: string, backendBaseUrl: string) => string;
-}): BackendHandler {
-	return async ({url, method, headers, body, backendBaseUrl, logger}): Promise<BackendResult> => {
+export const createFetchBackendHandler =
+	(options: {
+		extractModule?: (url: string, html: string, headers: Headers) => string | null | Promise<string | null>;
+		transformBackendUrl?: (url: string, backendBaseUrl: string) => string;
+	}): BackendHandler =>
+	async ({url, method, headers, body, backendBaseUrl, logger}): Promise<BackendResult> => {
 		const backendUrl = options.transformBackendUrl ? options.transformBackendUrl(url, backendBaseUrl) : `${backendBaseUrl}${url}`;
 
 		logger('debug', `backendBaseUrl="${backendBaseUrl}" args.url="${url}" url="${backendUrl}"`);
@@ -414,7 +427,7 @@ export function createFetchBackendHandler(options: {
 			redirected: response.redirected,
 		});
 
-		const status = response.status;
+		const {status} = response;
 		const contentType = response.headers.get('content-type') ?? 'application/octet-stream';
 
 		// Extract response headers (set-cookie)
@@ -428,7 +441,7 @@ export function createFetchBackendHandler(options: {
 		// Handle redirects (300-399)
 		if (status >= 300 && status < 400) {
 			const rawLocation = response.headers.get('location');
-			if (!rawLocation) {
+			if (rawLocation === null || rawLocation.length === 0) {
 				throw new Error(`Redirect ${status} missing Location header`);
 			}
 
@@ -448,9 +461,10 @@ export function createFetchBackendHandler(options: {
 		if (contentType.includes('text/html')) {
 			const html = await response.text();
 			let module: string | null = null;
+			const {extractModule} = options;
 
-			if (response.ok) {
-				const result = options.extractModule?.(url, html, response.headers);
+			if (response.ok && typeof extractModule === 'function') {
+				const result = extractModule(url, html, response.headers);
 				module = (result instanceof Promise ? await result : result) ?? null;
 			}
 			logger('debug', `extracted module "${module}"`);
@@ -471,44 +485,28 @@ export function createFetchBackendHandler(options: {
 			headers: responseHeaders,
 		};
 	};
-}
 
 /**
  * Helper: Extract module from HTML meta tag
- * @param html - HTML content
- * @param metaName - Name of meta tag
- * @returns Extracted module or null
+ * @param {string} html - HTML content
+ * @param {string} metaName - Name of meta tag
+ * @returns {string | null} Extracted module or null
  * @public
  */
-export function extractModuleFromMeta(html: string, metaName = 'vite-module'): string | null {
+export const extractModuleFromMeta = (html: string, metaName = 'vite-module'): string | null => {
 	const regex = new RegExp(`<meta name="${metaName}" content="([^"]+)">`);
 	const match = regex.exec(html);
-	return match?.[1] ?? null;
-}
+	return Array.isArray(match) && typeof match[1] === 'string' ? match[1] : null;
+};
 
 /**
  * Helper: Extract module from URL based on pattern
- * @param url - Request URL
- * @param pattern - Regex pattern with capture group
- * @returns Extracted module or null
+ * @param {string} url - Request URL
+ * @param {RegExp} pattern - Regex pattern with capture group
+ * @returns {string | null} Extracted module or null
  * @public
  */
-export function extractModuleFromUrl(url: string, pattern: RegExp): string | null {
+export const extractModuleFromUrl = (url: string, pattern: RegExp): string | null => {
 	const match = pattern.exec(url);
-	return match?.[1] ?? null;
-}
-
-/**
- * Returns current date-time in format: HH24:MI:SS.MS
- * @returns Formatted timestamp.
- */
-function nowUtcCompact(): string {
-	const now = new Date();
-
-	const hh = now.getUTCHours().toString().padStart(2, '0');
-	const mi = now.getUTCMinutes().toString().padStart(2, '0');
-	const ss = now.getUTCSeconds().toString().padStart(2, '0');
-	const ms = now.getUTCMilliseconds().toString().padStart(3, '0');
-
-	return `${hh}:${mi}:${ss}.${ms}`;
-}
+	return Array.isArray(match) && typeof match[1] === 'string' ? match[1] : null;
+};

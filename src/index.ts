@@ -1,4 +1,5 @@
-import type {Plugin, ViteDevServer} from 'vite';
+import {type Plugin, type ViteDevServer} from 'vite';
+import {type IncomingMessage, type ServerResponse} from 'node:http';
 import {BackendProxy, type ProxyConfig} from './backend-proxy.ts';
 
 /** @public */
@@ -17,11 +18,22 @@ export {stripTrailingSlash, stripLeadingSlash, ensureLeadingSlash, joinUrlParts,
 
 /**
  * Backend Proxy Plugin
- * @param config - Plugin configuration
- * @returns Vite plugin
+ * @param {ProxyConfig} config - Plugin configuration
+ * @returns {Plugin} Vite plugin
  */
-export function backendProxyPlugin(config: ProxyConfig): Plugin {
+export const backendProxyPlugin = (config: ProxyConfig): Plugin => {
 	const proxy = new BackendProxy(config);
+
+	const handleRequest = async (url: string, req: IncomingMessage, res: ServerResponse, server: ViteDevServer, next: (error?: Error) => void): Promise<void> => {
+		try {
+			const handled = await proxy.handleRequest(url, req, res, server);
+			if (!handled) {
+				next();
+			}
+		} catch (error) {
+			next(error instanceof Error ? error : new Error(String(error)));
+		}
+	};
 
 	return {
 		name: 'backend-proxy-plugin',
@@ -31,19 +43,16 @@ export function backendProxyPlugin(config: ProxyConfig): Plugin {
 				backendBaseUrl: config.backendBaseUrl,
 			});
 
-			server.middlewares.use((req, res, next) => {
-				const url = req.url;
-				if (!url) {
+			server.middlewares.use((req, res, next): void => {
+				const {url} = req;
+				if (typeof url !== 'string') {
 					next();
 					return;
 				}
 
-				void proxy.handleRequest(url, req, res, server).then((handled) => {
-					if (!handled) {
-						next();
-					}
-				});
+				// eslint-disable-next-line typescript-eslint/no-floating-promises
+				handleRequest(url, req, res, server, next);
 			});
 		},
 	} satisfies Plugin;
-}
+};

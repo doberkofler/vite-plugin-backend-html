@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {once} from 'node:events';
 
 export class MockBackendServer {
 	private readonly port: number;
@@ -43,7 +44,7 @@ export class MockBackendServer {
 			}
 
 			if (req.url === '/api/cookies') {
-				const cookie = req.headers.cookie;
+				const {cookie} = req.headers;
 				res.writeHead(200, {
 					'Content-Type': 'application/json',
 					'Set-Cookie': ['session=12345; HttpOnly', 'theme=dark'],
@@ -103,20 +104,18 @@ export class MockBackendServer {
 			res.end();
 		});
 
-		await new Promise<void>((resolve) => {
-			server.listen(this.port, resolve);
-		});
+		server.listen(this.port);
+		await once(server, 'listening');
 
 		this.server = server;
 	}
 
 	public async close(): Promise<void> {
-		return new Promise<void>((resolve) => {
-			if (this.server) {
-				this.server.close(() => {
-					resolve();
-				});
-			}
-		});
+		if (this.server === null) {
+			return;
+		}
+
+		this.server.close();
+		await once(this.server, 'close');
 	}
 }

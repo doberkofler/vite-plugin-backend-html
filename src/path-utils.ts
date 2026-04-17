@@ -4,44 +4,36 @@
 
 /**
  * Strips trailing slashes from path
- * @param path - Path to normalize
- * @returns Path without trailing slashes
+ * @param {string} path - Path to normalize
+ * @returns {string} Path without trailing slashes
  * @public
  */
-export const stripTrailingSlash = (path: string): string => {
-	return path.replace(/\/+$/u, '');
-};
+export const stripTrailingSlash = (path: string): string => path.replace(/\/+$/u, '');
 
 /**
  * Strips leading slashes from path
- * @param path - Path to normalize
- * @returns Path without leading slashes
+ * @param {string} path - Path to normalize
+ * @returns {string} Path without leading slashes
  * @public
  */
-export const stripLeadingSlash = (path: string): string => {
-	return path.replace(/^\/+/u, '');
-};
+export const stripLeadingSlash = (path: string): string => path.replace(/^\/+/u, '');
 
 /**
  * Ensures path has exactly one leading slash
- * @param path - Path to normalize
- * @returns Path with single leading slash
+ * @param {string} path - Path to normalize
+ * @returns {string} Path with single leading slash
  * @public
  */
-export const ensureLeadingSlash = (path: string): string => {
-	return '/' + stripLeadingSlash(path);
-};
+export const ensureLeadingSlash = (path: string): string => `/${stripLeadingSlash(path)}`;
 
 /**
  * Joins URL parts, ensuring no double slashes
- * @param base - Base URL (trailing slash removed)
- * @param path - Path to append (leading slash removed)
- * @returns Joined URL
+ * @param {string} base - Base URL (trailing slash removed)
+ * @param {string} path - Path to append (leading slash removed)
+ * @returns {string} Joined URL
  * @public
  */
-export const joinUrlParts = (base: string, path: string): string => {
-	return `${stripTrailingSlash(base)}/${stripLeadingSlash(path)}`;
-};
+export const joinUrlParts = (base: string, path: string): string => `${stripTrailingSlash(base)}/${stripLeadingSlash(path)}`;
 
 /**
  * Normalizes redirect location relative to base path
@@ -50,9 +42,9 @@ export const joinUrlParts = (base: string, path: string): string => {
  * - Absolute paths (strips base path if present)
  * - Relative paths (ensures leading slash)
  *
- * @param location - Redirect location from backend
- * @param basePath - Base path to strip (e.g. '/lj_unittest/')
- * @returns Normalized location with single leading slash
+ * @param {string} location - Redirect location from backend
+ * @param {string} basePath - Base path to strip (e.g. '/lj_unittest/')
+ * @returns {string} Normalized location with single leading slash
  * @public
  */
 export const normalizeRedirectLocation = (location: string, basePath: string): string => {

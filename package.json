@@ -1,29 +1,25 @@
 {
+	"$schema": "https://raw.githubusercontent.com/vitejs/vite-plugin-registry/refs/heads/main/data/schema/extended-package-json.schema.json",
 	"name": "vite-plugin-backend-html",
 	"version": "0.2.0",
-	"type": "module",
+	"keywords": [
+		"backend",
+		"frontend",
+		"html",
+		"vite",
+		"vite-plugin"
+	],
+	"homepage": "https://github.com/doberkofler/vite-plugin-merge-css#readme",
 	"license": "MIT",
 	"author": "Dieter Oberkofler",
+	"repository": {
+		"type": "git",
+		"url": "git://github.com/doberkofler/vite-plugin-merge-css.git"
+	},
 	"files": [
 		"dist"
 	],
-	"keywords": [
-		"vite",
-		"vite-plugin",
-		"frontend",
-		"backend",
-		"html"
-	],
-	"scripts": {
-		"dev": "tsdown --watch",
-		"build": "tsdown",
-		"lint": "prettier --check . && oxlint --type-aware --type-check && tsc",
-		"test": "vitest run --coverage",
-		"ci": "npm run lint && npm run build && npm run test",
-		"create-changelog": "conventional-changelog -p angular -i CHANGELOG.md -s -r 0",
-		"pack-local": "rm -f *.tgz && npm run build && npm pack",
-		"prepare": "husky"
-	},
+	"type": "module",
 	"main": "./dist/index.mjs",
 	"module": "./dist/index.mjs",
 	"types": "./dist/index.d.ts",
@@ -31,36 +27,53 @@
 		".": "./dist/index.mjs",
 		"./package.json": "./package.json"
 	},
-	"engines": {
-		"node": ">=22"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git://github.com/doberkofler/vite-plugin-merge-css.git"
-	},
-	"homepage": "https://github.com/doberkofler/vite-plugin-merge-css#readme",
-	"devDependencies": {
-		"@commitlint/cli": "^20.5.0",
-		"@commitlint/config-conventional": "^20.5.0",
-		"@types/debug": "^4.1.12",
-		"@types/node": "^25.5.0",
-		"@vitest/coverage-v8": "^4.1.0",
-		"conventional-changelog": "^7.2.0",
-		"conventional-changelog-angular": "^8.3.1",
-		"eslint-plugin-regexp": "3.1.0",
-		"husky": "^9.1.7",
-		"oxlint": "^1.56.0",
-		"oxlint-tsgolint": "^0.20.0",
-		"prettier": "^3.8.1",
-		"tsdown": "^0.21.4",
-		"typescript": "^6.0.2",
-		"vite": "^7.0.0 || ^8.0.0",
-		"vitest": "^4.1.0"
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "oxlint",
+		"format": "oxfmt --write",
+		"format:check": "oxfmt --check",
+		"ci": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run build && pnpm run test",
+		"dev": "tsdown --watch",
+		"build": "tsdown",
+		"test": "vitest run --coverage",
+		"create-changelog": "conventional-changelog -p angular -i CHANGELOG.md -s -r 0",
+		"pack-local": "rm -f *.tgz && npm run build && npm pack",
+		"prepare": "husky",
+		"release": "release-it"
 	},
 	"dependencies": {
 		"debug": "^4.4.3"
 	},
+	"devDependencies": {
+		"@commitlint/cli": "^20.5.0",
+		"@commitlint/config-conventional": "^20.5.0",
+		"@types/debug": "^4.1.12",
+		"@types/node": "^25.6.0",
+		"@vitest/coverage-v8": "^4.1.4",
+		"conventional-changelog": "^7.2.0",
+		"conventional-changelog-angular": "^8.3.1",
+		"eslint-plugin-regexp": "3.1.0",
+		"husky": "^9.1.7",
+		"oxfmt": "^0.45.0",
+		"oxlint": "^1.60.0",
+		"oxlint-tsgolint": "^0.20.0",
+		"release-it": "^19.2.4",
+		"tsdown": "^0.21.8",
+		"typescript": "^6.0.2",
+		"vite": "^7.0.0 || ^8.0.0",
+		"vitest": "^4.1.4"
+	},
 	"peerDependencies": {
 		"vite": "^7.0.0 || ^8.0.0"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"compatiblePackages": {
+		"schemaVersion": 1,
+		"vite": {
+			"type": "compatible",
+			"versions": "^7.0.0 || ^8.0.0"
+		}
 	}
 }
