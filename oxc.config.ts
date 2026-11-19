@@ -42,6 +42,7 @@ export const linter = defineConfig({
 		'eslint/no-negated-condition': 'off', // TODO: consider enabling
 		'eslint/no-nested-ternary': 'off',
 		'eslint/no-warning-comments': 'off',
+		'eslint/one-var': ['error', 'never'],
 		'eslint/no-undefined': 'off', // TODO: consider enabling
 		'eslint/no-plusplus': 'off',
 		'eslint/sort-imports': 'off',
@@ -160,6 +161,14 @@ export const linter = defineConfig({
 				'typescript/no-explicit-any': 'off',
 				'typescript/no-unsafe-assignment': 'off',
 				'typescript/no-unsafe-member-access': 'off',
+			},
+		},
+		{
+			files: ['tests/index.test.ts'],
+			rules: {
+				// Recognize the fixture-backed Vitest test function.
+				'vitest/no-standalone-expect': ['error', {additionalTestBlockFunctions: ['integrationTest']}],
+				'vitest/require-hook': ['error', {allowedFunctionCalls: ['integrationTest']}],
 			},
 		},
 	],

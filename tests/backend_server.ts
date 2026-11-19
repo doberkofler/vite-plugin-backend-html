@@ -5,7 +5,7 @@ export class MockBackendServer {
 	private readonly port: number;
 	private server: http.Server | null = null;
 
-	constructor(port: number) {
+	public constructor(port: number) {
 		this.port = port;
 	}
 

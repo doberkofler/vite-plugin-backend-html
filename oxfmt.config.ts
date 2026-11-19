@@ -1,2 +1,1 @@
-import {formatter} from './oxc.config.ts';
-export default formatter;
+export {formatter as default} from './oxc.config.ts';

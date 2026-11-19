@@ -311,8 +311,8 @@ export class BackendProxy {
 			}
 
 			default: {
-				const _exhaustive: never = result;
-				throw new Error(`Unhandled result type: ${JSON.stringify(_exhaustive)}`);
+				const exhaustive: never = result;
+				throw new Error(`Unhandled result type: ${JSON.stringify(exhaustive)}`);
 			}
 		}
 	}
@@ -343,8 +343,8 @@ export class BackendProxy {
 			inject(getModuleEntryPoints(module));
 		}
 
-		let processedHtml = html.replaceAll(/<link [^>]*href="(?:\/assets\/|\/q\/p\/)[^"]+"[^>]*>/g, '');
-		processedHtml = processedHtml.replaceAll(/<script [^>]*src="(?:\/assets\/|\/q\/p\/)[^"]+"[^>]*><\/script>/g, '');
+		let processedHtml = html.replaceAll(/<link [^>]*href="(?:\/assets\/|\/q\/p\/)[^"]+"[^>]*>/gu, '');
+		processedHtml = processedHtml.replaceAll(/<script [^>]*src="(?:\/assets\/|\/q\/p\/)[^"]+"[^>]*><\/script>/gu, '');
 
 		if (processedHtml.includes('</head>')) {
 			return processedHtml.replace('</head>', `${injection.join('\n')}\n</head>`);
@@ -369,7 +369,7 @@ export class BackendProxy {
 		if (url.startsWith('/@') || url.startsWith('/node_modules/')) {
 			return true;
 		}
-		if (/\.(?:ts|tsx|js|jsx|mjs)$/.test(url) || /\.css(?:\?|$)/.test(url)) {
+		if (/\.(?:ts|tsx|js|jsx|mjs)$/u.test(url) || /\.css(?:\?|$)/u.test(url)) {
 			return true;
 		}
 		return false;
@@ -494,7 +494,7 @@ export const createFetchBackendHandler =
  * @public
  */
 export const extractModuleFromMeta = (html: string, metaName = 'vite-module'): string | null => {
-	const regex = new RegExp(`<meta name="${metaName}" content="([^"]+)">`);
+	const regex = new RegExp(`<meta name="${metaName}" content="([^"]+)">`, 'u');
 	const match = regex.exec(html);
 	return Array.isArray(match) && typeof match[1] === 'string' ? match[1] : null;
 };

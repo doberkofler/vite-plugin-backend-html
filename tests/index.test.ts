@@ -1,7 +1,8 @@
-import {Readable} from 'node:stream';
-import {describe, it, expect, beforeAll, afterAll, vi} from 'vitest';
+import {strict as assert} from 'node:assert';
 import {type IncomingMessage, type ServerResponse} from 'node:http';
-import {createServer, type ViteDevServer} from 'vite';
+import {Readable} from 'node:stream';
+import {createServer, type Plugin, type ViteDevServer} from 'vite';
+import {describe, it, expect, vi} from 'vitest';
 import {
 	backendProxyPlugin,
 	extractModuleFromMeta,
@@ -17,32 +18,46 @@ import {
 import {MockBackendServer} from './backend_server.ts';
 import {BackendProxy} from '../src/backend-proxy.ts';
 
-const missingMiddleware = (): never => {
-	throw new TypeError('Expected middleware handler');
+type Middleware = (req: IncomingMessage, res: ServerResponse, next: (error?: Error) => void) => void;
+
+const captureMiddleware = async (plugin: Plugin): Promise<Middleware> => {
+	const hook = plugin.configureServer;
+	assert.ok(typeof hook === 'function', 'Expected a configureServer hook');
+
+	const use = vi.fn<(middleware: Middleware) => void>();
+	const server = {middlewares: {use}} as unknown as ViteDevServer;
+	const configureServer: OmitThisParameter<typeof hook> = hook;
+	await configureServer(server);
+
+	const call = use.mock.lastCall;
+	assert.ok(call !== undefined, 'Expected a registered middleware');
+	return call[0];
 };
 
-describe('backendProxyPlugin', () => {
-	const backendPort = 3005;
-	const backendServer = new MockBackendServer(backendPort);
-	let viteServer: ViteDevServer;
-	const vitePort = 3006;
-
-	beforeAll(async () => {
-		// Open Backend Server
+const integrationTest = it
+	.extend('backendPort', {scope: 'file'}, 3005)
+	.extend('backendBaseUrl', {scope: 'file'}, async ({backendPort}, {onCleanup}) => {
+		const backendServer = new MockBackendServer(backendPort);
+		onCleanup(async () => {
+			await backendServer.close();
+		});
 		await backendServer.open();
-
-		// Vite Server with Plugin
-		viteServer = await createServer({
+		return `http://localhost:${backendPort}`;
+	})
+	.extend('viteBaseUrl', {scope: 'file'}, async ({backendBaseUrl}, {onCleanup}) => {
+		const vitePort = 3006;
+		const viteServer = await createServer({
 			root: process.cwd(),
 			server: {
 				port: vitePort,
+				strictPort: true,
 				hmr: false,
 			},
 			plugins: [
 				backendProxyPlugin({
-					backendBaseUrl: `http://localhost:${backendPort}`,
+					backendBaseUrl,
 					backendHandler: async ({url}): Promise<BackendResult> => {
-						const res = await fetch(`http://localhost:${backendPort}${url}`, {redirect: 'manual'});
+						const res = await fetch(`${backendBaseUrl}${url}`, {redirect: 'manual'});
 						const {status} = res;
 						const responseHeaders: Record<string, string | string[]> = {};
 						const setCookie = res.headers.getSetCookie();
@@ -89,37 +104,71 @@ describe('backendProxyPlugin', () => {
 				}),
 			],
 		});
-
+		onCleanup(async () => {
+			await viteServer.close();
+		});
 		await viteServer.listen();
+		return `http://localhost:${vitePort}`;
+	})
+	.extend('dynamicViteBaseUrl', {scope: 'file'}, async ({backendBaseUrl}, {onCleanup}) => {
+		const vitePort = 3007;
+		const handler = createFetchBackendHandler({
+			extractModule: async (_url, html) => {
+				await Promise.resolve();
+				return extractModuleFromMeta(html);
+			},
+		});
+		const viteServer = await createServer({
+			root: process.cwd(),
+			server: {port: vitePort, strictPort: true, hmr: false},
+			plugins: [
+				backendProxyPlugin({
+					backendBaseUrl,
+					backendHandler: handler,
+					assetConfig: {
+						globalEntryPoints: {js: '/src/main.ts', css: '/src/style.css'},
+						getModuleEntryPoints: (module) => ({
+							js: `/src/${module}.ts`,
+							css: `/src/${module}.css`,
+						}),
+					},
+					bypass: (): boolean => false,
+				}),
+			],
+		});
+		onCleanup(async () => {
+			await viteServer.close();
+		});
+		await viteServer.listen();
+		return `http://localhost:${vitePort}`;
 	});
 
-	afterAll(async () => {
-		await viteServer.close();
-
-		// Close Backend Server
-		await backendServer.close();
-	});
-
-	it('should allow Vite to handle internal resources', async () => {
-		const response = await fetch(`http://localhost:${vitePort}/@vite/client`);
+describe('backendProxyPlugin', () => {
+	integrationTest('should allow Vite to handle internal resources', async ({viteBaseUrl}) => {
+		expect.assertions(2);
+		const response = await fetch(`${viteBaseUrl}/@vite/client`);
 		expect(response.status).toBe(200);
 		const text = await response.text();
 		expect(text).toContain('vite');
 	});
 
-	it('should proxy HTML requests and inject assets', async () => {
-		const response = await fetch(`http://localhost:${vitePort}/page`);
+	integrationTest('should proxy HTML requests without backend asset tags', async ({viteBaseUrl}) => {
+		expect.assertions(5);
+		const response = await fetch(`${viteBaseUrl}/page`);
 		expect(response.status).toBe(200);
 		expect(response.headers.get('content-type')).toContain('text/html');
 
 		const html = await response.text();
 		expect(html).toContain('<h1>Backend Page</h1>');
 
-		// Verify backend assets are REMOVED
 		expect(html).not.toContain('/assets/main-prod.css');
 		expect(html).not.toContain('/assets/main-prod.js');
+	});
 
-		// Check injected assets
+	integrationTest('should inject Vite, global, and module asset tags into backend HTML', async ({viteBaseUrl}) => {
+		expect.assertions(5);
+		const response = await fetch(`${viteBaseUrl}/page`);
+		const html = await response.text();
 		expect(html).toContain('<script type="module" src="/@vite/client"></script>');
 		expect(html).toContain('<link rel="stylesheet" href="/src/style.css">');
 		expect(html).toContain('<script type="module" src="/src/main.ts"></script>');
@@ -127,33 +176,38 @@ describe('backendProxyPlugin', () => {
 		expect(html).toContain('<script type="module" src="/src/test-module.ts"></script>');
 	});
 
-	it('should forward non-HTML backend responses (e.g., JSON API)', async () => {
-		const response = await fetch(`http://localhost:${vitePort}/api/data`);
+	integrationTest('should forward non-HTML backend responses (e.g., JSON API)', async ({viteBaseUrl}) => {
+		expect.assertions(3);
+		const response = await fetch(`${viteBaseUrl}/api/data`);
 		expect(response.status).toBe(200);
 		expect(response.headers.get('content-type')).toContain('application/json');
 
-		const json = (await response.json()) as {data: string};
-		expect(json).toEqual({data: 'backend-data'});
+		await expect(response.text()).resolves.toBe(JSON.stringify({data: 'backend-data'}));
 	});
 
-	it('should handle backend errors gracefully', async () => {
-		const response = await fetch(`http://localhost:${vitePort}/not-found`);
+	integrationTest('should handle backend errors gracefully', async ({viteBaseUrl}) => {
+		expect.assertions(1);
+		const response = await fetch(`${viteBaseUrl}/not-found`);
 		// backendHandler will fetch and get 404, then return binary with 404
 		expect(response.status).toBe(404);
 	});
 
-	it('should convert /production-page and remove /q/p/ assets', async () => {
-		const response = await fetch(`http://localhost:${vitePort}/production-page`);
+	integrationTest('should remove /q/p/ assets from the production page', async ({viteBaseUrl}) => {
+		expect.assertions(5);
+		const response = await fetch(`${viteBaseUrl}/production-page`);
 		expect(response.status).toBe(200);
 		const html = await response.text();
 
-		// Verify production assets are REMOVED
 		expect(html).not.toContain('/q/p/lj_unittest/globals_260200.css');
 		expect(html).not.toContain('/q/p/lj_unittest/globals_260200.js');
 		expect(html).not.toContain('/q/p/lj_unittest/las_mod_dashboard_260200.css');
 		expect(html).not.toContain('/q/p/lj_unittest/las_mod_dashboard_260200.js');
+	});
 
-		// Check injected assets
+	integrationTest('should inject Vite and global assets into the production page', async ({viteBaseUrl}) => {
+		expect.assertions(3);
+		const response = await fetch(`${viteBaseUrl}/production-page`);
+		const html = await response.text();
 		expect(html).toContain('<script type="module" src="/@vite/client"></script>');
 		expect(html).toContain('<link rel="stylesheet" href="/src/style.css">');
 		expect(html).toContain('<script type="module" src="/src/main.ts"></script>');
@@ -161,6 +215,7 @@ describe('backendProxyPlugin', () => {
 
 	describe('helpers', () => {
 		it('extractModuleFromMeta should extract module from meta tag', () => {
+			expect.assertions(3);
 			const html = '<html><head><meta name="vite-module" content="my-module"></head></html>';
 			expect(extractModuleFromMeta(html)).toBe('my-module');
 			expect(extractModuleFromMeta(html, 'other-name')).toBeNull();
@@ -168,69 +223,42 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('extractModuleFromUrl should extract module from URL', () => {
+			expect.assertions(2);
 			const url = '/app/admin/dashboard';
-			const pattern = /^\/app\/([^/]+)/;
+			const pattern = /^\/app\/(?<module>[^/]+)/u;
 			expect(extractModuleFromUrl(url, pattern)).toBe('admin');
 			expect(extractModuleFromUrl('/other', pattern)).toBeNull();
 		});
 	});
 
 	describe('dynamic asset injection', () => {
-		it('should inject assets using createFetchBackendHandler and meta tag', async () => {
-			const handler = createFetchBackendHandler({
-				extractModule: async (_url: string, html: string) => {
-					await Promise.resolve();
-					const mod = extractModuleFromMeta(html);
-					if (mod === 'never') {
-						await Promise.resolve();
-					}
-					return mod;
-				},
-			});
-
-			const dynamicViteServer = await createServer({
-				root: process.cwd(),
-				server: {port: 3007, hmr: false},
-				plugins: [
-					backendProxyPlugin({
-						backendBaseUrl: `http://localhost:${backendPort}`,
-						backendHandler: handler,
-						assetConfig: {
-							globalEntryPoints: {js: '/src/main.ts', css: '/src/style.css'},
-							getModuleEntryPoints: (module) => ({
-								js: `/src/${module}.ts`,
-								css: `/src/${module}.css`,
-							}),
-						},
-						bypass: (): boolean => false,
-					}),
-				],
-			});
-			await dynamicViteServer.listen();
-
-			try {
-				const response = await fetch('http://localhost:3007/dynamic-page');
-				const html = await response.text();
-
-				expect(html).toContain('<script type="module" src="/@vite/client"></script>');
-				expect(html).toContain('<link rel="stylesheet" href="/src/style.css">');
-				expect(html).toContain('<script type="module" src="/src/main.ts"></script>');
-				expect(html).toContain('<link rel="stylesheet" href="/src/dynamic-module.css">');
-				expect(html).toContain('<script type="module" src="/src/dynamic-module.ts"></script>');
-				expect(html).toContain('<h1>Dynamic Page</h1>');
-			} finally {
-				await dynamicViteServer.close();
-			}
+		integrationTest('should preserve dynamic page content while injecting global assets', async ({dynamicViteBaseUrl}) => {
+			expect.assertions(4);
+			const response = await fetch(`${dynamicViteBaseUrl}/dynamic-page`);
+			const html = await response.text();
+			expect(html).toContain('<h1>Dynamic Page</h1>');
+			expect(html).toContain('<script type="module" src="/@vite/client"></script>');
+			expect(html).toContain('<link rel="stylesheet" href="/src/style.css">');
+			expect(html).toContain('<script type="module" src="/src/main.ts"></script>');
 		});
 
-		it('should handle binary response using createFetchBackendHandler in plugin', async () => {
+		integrationTest('should inject module assets from a backend meta tag', async ({dynamicViteBaseUrl}) => {
+			expect.assertions(2);
+			const response = await fetch(`${dynamicViteBaseUrl}/dynamic-page`);
+			const html = await response.text();
+			expect(html).toContain('<link rel="stylesheet" href="/src/dynamic-module.css">');
+			expect(html).toContain('<script type="module" src="/src/dynamic-module.ts"></script>');
+		});
+
+		integrationTest('should handle binary response using createFetchBackendHandler in plugin', async ({backendBaseUrl}) => {
+			expect.assertions(3);
 			const handler = createFetchBackendHandler({});
 			const streamingViteServer = await createServer({
 				root: process.cwd(),
-				server: {port: 3008, hmr: false},
+				server: {port: 3008, strictPort: true, hmr: false},
 				plugins: [
 					backendProxyPlugin({
-						backendBaseUrl: `http://localhost:${backendPort}`,
+						backendBaseUrl,
 						backendHandler: handler,
 						assetConfig: {
 							globalEntryPoints: {},
@@ -246,15 +274,15 @@ describe('backendProxyPlugin', () => {
 				const response = await fetch('http://localhost:3008/api/data');
 				expect(response.status).toBe(200);
 				expect(response.headers.get('content-type')).toBe('application/json');
-				const json = (await response.json()) as Record<string, unknown>;
-				expect(json).toEqual({data: 'backend-data'});
+				await expect(response.text()).resolves.toBe(JSON.stringify({data: 'backend-data'}));
 			} finally {
 				await streamingViteServer.close();
 			}
 		});
 
-		it('should prepend assets if no head or body tags exist', async () => {
-			const response = await fetch(`http://localhost:${vitePort}/fragment-page`);
+		integrationTest('should prepend assets if no head or body tags exist', async ({viteBaseUrl}) => {
+			expect.assertions(3);
+			const response = await fetch(`${viteBaseUrl}/fragment-page`);
 			const html = await response.text();
 
 			expect(html).toContain('<script type="module" src="/src/main.ts"></script>');
@@ -263,7 +291,8 @@ describe('backendProxyPlugin', () => {
 			expect(html).toContain('<script type="module" src="/src/test-module.ts"></script>');
 		});
 
-		it('should handle binary response in createFetchBackendHandler', async () => {
+		integrationTest('should handle binary response in createFetchBackendHandler', async ({backendBaseUrl}) => {
+			expect.assertions(2);
 			const handler = createFetchBackendHandler({});
 			const result = await handler({
 				url: '/api/data',
@@ -271,22 +300,19 @@ describe('backendProxyPlugin', () => {
 				headers: {},
 				body: undefined,
 				req: {headers: {}} as IncomingMessage,
-				backendBaseUrl: `http://localhost:${backendPort}`,
+				backendBaseUrl,
 				logger: (_level: string, _message: string, _data?: unknown) => {
 					/* empty */
 				},
 			});
 
-			expect(result.type).toBe('binary');
-			if (result.type !== 'binary') {
-				throw new Error('Expected binary result');
-			}
-
+			assert.ok(result.type === 'binary', 'Expected binary result');
 			expect(result.contentType).toBe('application/json');
-			expect(JSON.parse(result.content.toString())).toEqual({data: 'backend-data'});
+			expect(result.content.toString()).toBe(JSON.stringify({data: 'backend-data'}));
 		});
 
-		it('should forward and receive cookies using createFetchBackendHandler', async () => {
+		integrationTest('should forward and receive cookies using createFetchBackendHandler', async ({backendBaseUrl}) => {
+			expect.assertions(3);
 			const handler = createFetchBackendHandler({});
 			const result = await handler({
 				url: '/api/cookies',
@@ -300,28 +326,23 @@ describe('backendProxyPlugin', () => {
 						cookie: 'user=test-user',
 					},
 				} as unknown as IncomingMessage,
-				backendBaseUrl: `http://localhost:${backendPort}`,
+				backendBaseUrl,
 				logger: (_level: string, _message: string, _data?: unknown) => {
 					/* empty */
 				},
 			});
 
-			// Verify response headers (Set-Cookie)
-			expect(result.headers).toBeDefined();
-			const headers = result.headers ?? {};
-			const setCookie = headers['set-cookie'] ?? [];
+			assert.ok(result.headers !== undefined, 'Expected response headers');
+			const setCookie = result.headers['set-cookie'];
 			expect(setCookie).toContain('session=12345; HttpOnly');
 			expect(setCookie).toContain('theme=dark');
 
-			// Verify received cookie by backend
-			if (result.type !== 'binary') {
-				throw new Error('Expected binary result');
-			}
-			const json = JSON.parse(result.content.toString()) as Record<string, unknown>;
-			expect(json.receivedCookie).toBe('user=test-user');
+			assert.ok(result.type === 'binary', 'Expected binary result');
+			expect(result.content.toString()).toBe(JSON.stringify({receivedCookie: 'user=test-user'}));
 		});
 
-		it('should handle redirects in createFetchBackendHandler', async () => {
+		integrationTest('should handle redirects in createFetchBackendHandler', async ({backendBaseUrl}) => {
+			expect.assertions(3);
 			const handler = createFetchBackendHandler({});
 			const result = await handler({
 				url: '/redirect-me',
@@ -329,40 +350,34 @@ describe('backendProxyPlugin', () => {
 				headers: {},
 				body: undefined,
 				req: {headers: {}} as IncomingMessage,
-				backendBaseUrl: `http://localhost:${backendPort}`,
+				backendBaseUrl,
 				logger: (_level: string, _message: string, _data?: unknown) => {
 					/* empty */
 				},
 			});
 
-			expect(result.type).toBe('redirect');
-			if (result.type !== 'redirect') {
-				throw new Error('Expected redirect result');
-			}
-
+			assert.ok(result.type === 'redirect', 'Expected redirect result');
 			expect(result.status).toBe(302);
 			expect(result.location).toBe('/page');
-			const headers = result.headers ?? {};
-			const setCookie = headers['set-cookie'] ?? [];
-			expect(setCookie).toContain('redirect-cookie=active');
+			assert.ok(result.headers !== undefined, 'Expected redirect headers');
+			expect(result.headers['set-cookie']).toContain('redirect-cookie=active');
 		});
 
-		it('should propagate redirects through the plugin', async () => {
-			const response = await fetch(`http://localhost:${vitePort}/redirect-me`, {
+		integrationTest('should propagate redirects through the plugin', async ({viteBaseUrl}) => {
+			expect.assertions(3);
+			const response = await fetch(`${viteBaseUrl}/redirect-me`, {
 				redirect: 'manual',
 			});
 
-			const {status} = response;
-			const location = response.headers.get('location') ?? '';
-			const setCookie = response.headers.get('set-cookie') ?? '';
-			expect(status).toBe(302);
-			expect(location).toBe('/page');
-			expect(setCookie).toContain('redirect-cookie=active');
+			expect(response.status).toBe(302);
+			expect(response.headers.get('location')).toBe('/page');
+			expect(response.headers.getSetCookie()).toContain('redirect-cookie=active');
 		});
 	});
 
 	describe('backendProxyPlugin uncovered branches', () => {
-		it('should call next if req.url is missing', () => {
+		it('should call next if req.url is missing', async () => {
+			expect.assertions(1);
 			const plugin = backendProxyPlugin({
 				backendBaseUrl: 'http://localhost',
 				bypass: (): boolean => false,
@@ -376,25 +391,14 @@ describe('backendProxyPlugin', () => {
 				},
 			});
 
-			const server = {
-				middlewares: {
-					use: vi.fn<(fn: (req: {url: string | undefined}, res: unknown, next: () => void) => void) => void>().mockImplementation((fn) => {
-						const req = {url: undefined};
-						const res = {};
-						const next = vi.fn<() => void>();
-						fn(req, res, next);
-						expect(next).toHaveBeenCalled();
-					}),
-				},
-			} as unknown as ViteDevServer;
-
-			if (typeof plugin.configureServer === 'function') {
-				const configureServer = plugin.configureServer as (server: ViteDevServer) => void;
-				configureServer(server);
-			}
+			const middleware = await captureMiddleware(plugin);
+			const next = vi.fn<() => void>();
+			middleware({} as IncomingMessage, {} as ServerResponse, next);
+			expect(next).toHaveBeenCalledWith();
 		});
 
-		it('should forward middleware errors to next', async () => {
+		it('should forward middleware errors to next', async ({onTestFinished}) => {
+			expect.assertions(1);
 			const plugin = backendProxyPlugin({
 				backendBaseUrl: 'http://localhost',
 				bypass: (): boolean => false,
@@ -410,30 +414,22 @@ describe('backendProxyPlugin', () => {
 
 			const failure = new Error('middleware failure');
 			const handleRequestSpy = vi.spyOn(BackendProxy.prototype, 'handleRequest').mockRejectedValueOnce(failure);
+			onTestFinished(() => {
+				handleRequestSpy.mockRestore();
+			});
 
-			let middleware: ((req: IncomingMessage, res: ServerResponse, next: (error?: Error) => void) => void) | undefined;
-			const server = {
-				middlewares: {
-					use: (fn: (req: IncomingMessage, res: ServerResponse, next: (error?: Error) => void) => void): void => {
-						middleware = fn;
-					},
-				},
-			} as unknown as ViteDevServer;
-
-			const configureServer = plugin.configureServer as (server: ViteDevServer) => void | Promise<void>;
-			await Promise.resolve(configureServer(server));
-
+			const middleware = await captureMiddleware(plugin);
 			const next = vi.fn<(error?: Error) => void>();
-			(middleware ?? missingMiddleware)({url: '/boom'} as IncomingMessage, {} as ServerResponse, next);
+			middleware({url: '/boom'} as IncomingMessage, {} as ServerResponse, next);
 			await Promise.resolve();
 
 			expect(next).toHaveBeenCalledWith(failure);
-			handleRequestSpy.mockRestore();
 		});
 	});
 
-	describe('BackendProxy uncovered branches', () => {
+	describe('backend proxy uncovered branches', () => {
 		it('should handle log levels and message filtering', () => {
+			expect.assertions(3);
 			const logs: string[] = [];
 			const logSpy = vi.spyOn(console, 'log').mockImplementation((msg: string) => {
 				logs.push(msg);
@@ -460,15 +456,16 @@ describe('backendProxyPlugin', () => {
 			proxy.log('info', 'info msg');
 			proxy.log('debug', 'debug msg');
 
-			expect(logs.some((l) => l.includes('ERROR') && l.includes('error msg'))).toBe(true);
-			expect(logs.some((l) => l.includes('INFO') && l.includes('info msg'))).toBe(true);
-			expect(logs.some((l) => l.includes('DEBUG'))).toBe(false);
+			expect(logs).toContainEqual(expect.stringMatching(/ERROR.*error msg/u));
+			expect(logs).toContainEqual(expect.stringMatching(/INFO.*info msg/u));
+			expect(logs).not.toContainEqual(expect.stringContaining('DEBUG'));
 
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
 		});
 
 		it('should handle log with empty message', () => {
+			expect.assertions(1);
 			const logs: string[] = [];
 			const consoleSpy = vi.spyOn(console, 'log').mockImplementation((msg: string) => {
 				logs.push(msg);
@@ -495,6 +492,7 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('should throw on invalid log levels', () => {
+			expect.assertions(1);
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
 				bypass: (): boolean => false,
@@ -515,6 +513,7 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('should handle proxy errors with 500 response', async () => {
+			expect.assertions(3);
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
 				bypass: (): boolean => false,
@@ -543,6 +542,7 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('should handle POST request with body', async () => {
+			expect.assertions(1);
 			let receivedBody: Buffer | undefined;
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
@@ -578,10 +578,16 @@ describe('backendProxyPlugin', () => {
 			} as unknown as ViteDevServer;
 
 			await proxy.handleRequest('/post', req, res, serverMock);
-			expect(receivedBody === undefined ? undefined : receivedBody.toString()).toBe('hello');
+			assert.ok(receivedBody !== undefined, 'Expected a forwarded POST body');
+			expect(receivedBody.toString()).toBe('hello');
 		});
 
-		it('should apply URL rewrites', async () => {
+		it.each([
+			['/old-prefix/path', '/new-prefix/path'],
+			['/other/stuff', '/replacement/stuff'],
+			['/no-match/path', '/no-match/path'],
+		])('should handle URL rewrite for %s', async (requestUrl, expectedUrl) => {
+			expect.assertions(3);
 			let handledUrl = '';
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
@@ -602,7 +608,7 @@ describe('backendProxyPlugin', () => {
 				debug: 'debug',
 			});
 
-			const req = {method: 'GET', url: '/old-prefix/path'} as IncomingMessage;
+			const req = {method: 'GET', url: requestUrl} as IncomingMessage;
 			const end = vi.fn<(...args: unknown[]) => unknown>();
 			const res = {
 				statusCode: 0,
@@ -610,40 +616,19 @@ describe('backendProxyPlugin', () => {
 				end,
 			} as unknown as ServerResponse;
 
-			// Match first rewrite
-			const handled1 = await proxy.handleRequest('/old-prefix/path', req, res, {
+			const handled = await proxy.handleRequest(requestUrl, req, res, {
 				transformIndexHtml: async (_url: string, html: string) => {
 					await Promise.resolve();
 					return html;
 				},
 			} as ViteDevServer);
-
-			expect(handled1).toBe(true);
-			expect(handledUrl).toBe('/new-prefix/path');
-			expect(req.url).toBe('/new-prefix/path');
-
-			// Match second rewrite
-			const handled2 = await proxy.handleRequest('/other/stuff', req, res, {
-				transformIndexHtml: async (_url: string, html: string) => {
-					await Promise.resolve();
-					return html;
-				},
-			} as ViteDevServer);
-			expect(handled2).toBe(true);
-			expect(handledUrl).toBe('/replacement/stuff');
-
-			// No match
-			const handled3 = await proxy.handleRequest('/no-match/path', req, res, {
-				transformIndexHtml: async (_url: string, html: string) => {
-					await Promise.resolve();
-					return html;
-				},
-			} as ViteDevServer);
-			expect(handled3).toBe(true);
-			expect(handledUrl).toBe('/no-match/path');
+			expect(handled).toBe(true);
+			expect(handledUrl).toBe(expectedUrl);
+			expect(req.url).toBe(expectedUrl);
 		});
 
 		it('should inject assets after <body> if </head> is missing', () => {
+			expect.assertions(3);
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
 				bypass: (): boolean => false,
@@ -668,16 +653,13 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('should bypass requests when configured', async () => {
+			expect.assertions(1);
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
 				bypass: (url: string): boolean => url === '/bypass-me',
 				backendHandler: async (): Promise<BackendResult> => {
 					await Promise.resolve();
-					const result: BackendResult = {type: 'html', content: 'ok', module: null};
-					if (result.type === ('' as unknown)) {
-						await Promise.resolve();
-					}
-					return result;
+					return {type: 'html', content: 'ok', module: null};
 				},
 				assetConfig: {
 					globalEntryPoints: {},
@@ -692,6 +674,7 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('should skip JS/CSS files for Vite', async () => {
+			expect.assertions(3);
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
 				bypass: (_url: string): boolean => false,
@@ -707,12 +690,13 @@ describe('backendProxyPlugin', () => {
 			});
 
 			const res = {} as ServerResponse;
-			expect(await proxy.handleRequest('/script.js', {method: 'GET'} as IncomingMessage, res, {} as ViteDevServer)).toBe(false);
-			expect(await proxy.handleRequest('/style.css', {method: 'GET'} as IncomingMessage, res, {} as ViteDevServer)).toBe(false);
-			expect(await proxy.handleRequest('/style.css?v=1', {method: 'GET'} as IncomingMessage, res, {} as ViteDevServer)).toBe(false);
+			await expect(proxy.handleRequest('/script.js', {method: 'GET'} as IncomingMessage, res, {} as ViteDevServer)).resolves.toBe(false);
+			await expect(proxy.handleRequest('/style.css', {method: 'GET'} as IncomingMessage, res, {} as ViteDevServer)).resolves.toBe(false);
+			await expect(proxy.handleRequest('/style.css?v=1', {method: 'GET'} as IncomingMessage, res, {} as ViteDevServer)).resolves.toBe(false);
 		});
 
 		it('should throw on unhandled result type', async () => {
+			expect.assertions(1);
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
 				bypass: (): boolean => false,
@@ -738,6 +722,7 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('should throw on invalid config debug level', () => {
+			expect.assertions(1);
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
 				bypass: (): boolean => false,
@@ -749,7 +734,7 @@ describe('backendProxyPlugin', () => {
 					globalEntryPoints: {},
 					getModuleEntryPoints: (_module: string): Record<string, never> => ({}),
 				},
-				debug: 'invalid' as any,
+				debug: 'invalid' as LoggingLevel,
 			});
 
 			expect(() => {
@@ -758,6 +743,7 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('should handle request error during body reading', async () => {
+			expect.assertions(2);
 			const proxy = new BackendProxy({
 				backendBaseUrl: 'http://localhost',
 				bypass: (): boolean => false,
@@ -793,6 +779,7 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('should use transformBackendUrl in createFetchBackendHandler', async () => {
+			expect.assertions(1);
 			const handler = createFetchBackendHandler({
 				transformBackendUrl: (url: string, base: string): string => `${base}/custom${url}`,
 			});
@@ -825,6 +812,7 @@ describe('backendProxyPlugin', () => {
 		});
 
 		it('should not extract module if response is not ok', async () => {
+			expect.assertions(2);
 			const extractModule = vi.fn<(url: string, html: string, headers: Headers) => string | null>();
 			const handler = createFetchBackendHandler({extractModule});
 			vi.spyOn(globalThis, 'fetch').mockResolvedValue({
@@ -851,8 +839,7 @@ describe('backendProxyPlugin', () => {
 				},
 			});
 
-			expect(result.type).toBe('html');
-			expect(result.type === 'html' ? result.module : undefined).toBeNull();
+			expect(result).toMatchObject({type: 'html', module: null});
 			expect(extractModule).not.toHaveBeenCalled();
 			vi.restoreAllMocks();
 		});
@@ -860,28 +847,34 @@ describe('backendProxyPlugin', () => {
 
 	describe('path-utils uncovered branches', () => {
 		it('should join URL parts correctly', () => {
+			expect.assertions(1);
 			expect(joinUrlParts('http://localhost/', '/path')).toBe('http://localhost/path');
 		});
 
 		it('should handle stripTrailingSlash with multiple slashes', () => {
+			expect.assertions(1);
 			expect(stripTrailingSlash('/path///')).toBe('/path');
 		});
 
 		it('should handle stripLeadingSlash with multiple slashes', () => {
+			expect.assertions(1);
 			expect(stripLeadingSlash('///path')).toBe('path');
 		});
 
 		it('should handle normalizeRedirectLocation with absolute URL on same host', () => {
+			expect.assertions(1);
 			expect(normalizeRedirectLocation('http://localhost/new-path', '/base/')).toBe('/new-path');
 		});
 
 		it('should handle normalizeRedirectLocation with absolute URL and query/hash', () => {
+			expect.assertions(1);
 			expect(normalizeRedirectLocation('https://example.com/path?q=1#hash', '/')).toBe('/path?q=1#hash');
 		});
 	});
 
 	describe('createFetchBackendHandler uncovered branches', () => {
 		it('should handle POST request with body in createFetchBackendHandler', async () => {
+			expect.assertions(2);
 			const handler = createFetchBackendHandler({});
 			const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
 				status: 200,
@@ -908,25 +901,23 @@ describe('backendProxyPlugin', () => {
 				},
 			});
 
-			const [, lastCallInit] = fetchSpy.mock.calls[0] ?? [];
-			expect(lastCallInit === undefined ? undefined : lastCallInit.method).toBe('POST');
-			expect(lastCallInit === undefined ? undefined : lastCallInit.body).toBe(body);
+			const call = fetchSpy.mock.lastCall;
+			assert.ok(call !== undefined, 'Expected a fetch call');
+			const [, requestOptions] = call;
+			assert.ok(requestOptions !== undefined, 'Expected fetch request options');
+			expect(requestOptions.method).toBe('POST');
+			expect(requestOptions.body).toBe(body);
 
 			fetchSpy.mockRestore();
 		});
 
-		it('should handle fetch errors and missing location in redirect', async () => {
+		it('should reject a redirect with an empty location', async ({onTestFinished}) => {
+			expect.assertions(1);
 			const handler = createFetchBackendHandler({});
-
-			// Mock global fetch to return 302 without location
-			const originalFetch = globalThis.fetch;
-			globalThis.fetch = vi.fn<typeof fetch>().mockResolvedValue({
-				status: 302,
-				headers: new Headers({
-					location: '',
-				}),
-				getSetCookie: () => [],
-			} as unknown as Response);
+			const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, {status: 302, headers: {location: ''}}));
+			onTestFinished(() => {
+				fetchSpy.mockRestore();
+			});
 
 			await expect(
 				handler({
@@ -941,11 +932,10 @@ describe('backendProxyPlugin', () => {
 					},
 				}),
 			).rejects.toThrow('Redirect 302 missing Location header');
-
-			globalThis.fetch = originalFetch;
 		});
 
 		it('should handle append headers in createFetchBackendHandler', async () => {
+			expect.assertions(1);
 			const handler = createFetchBackendHandler({});
 			const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
 				status: 200,
@@ -973,12 +963,12 @@ describe('backendProxyPlugin', () => {
 				},
 			});
 
-			const [, lastCallInit] = fetchSpy.mock.calls[0] ?? [];
-			const lastCallHeaders = lastCallInit === undefined ? undefined : lastCallInit.headers;
-			if (!(lastCallHeaders instanceof Headers)) {
-				throw new Error('Expected Headers instance');
-			}
-			expect(lastCallHeaders.get('x-multi')).toBe('a, b');
+			const call = fetchSpy.mock.lastCall;
+			assert.ok(call !== undefined, 'Expected a fetch call');
+			const [, requestOptions] = call;
+			assert.ok(requestOptions !== undefined, 'Expected fetch request options');
+			assert.ok(requestOptions.headers instanceof Headers, 'Expected fetch request headers');
+			expect(requestOptions.headers.get('x-multi')).toBe('a, b');
 
 			fetchSpy.mockRestore();
 		});

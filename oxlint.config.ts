@@ -1,2 +1,1 @@
-import {linter} from './oxc.config.ts';
-export default linter;
+export {linter as default} from './oxc.config.ts';
